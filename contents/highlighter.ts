@@ -294,18 +294,48 @@ async function restoreWithRetry() {
 
   // Some highlights not yet in the DOM — watch for mutations
   let pending = sorted.filter((h) => !restored.has(h.id))
-  let attempts = 0
-  const MAX_ATTEMPTS = 5
+
+  const cleanup = () => {
+    observer.disconnect()
+    window.removeEventListener("scroll", onScroll)
+  }
 
   const observer = new MutationObserver(() => {
-    attempts++
     const nowRestored = tryRestore(pending)
     pending = pending.filter((h) => !nowRestored.has(h.id))
-    if (pending.length === 0 || attempts >= MAX_ATTEMPTS) observer.disconnect()
+    if (pending.length === 0) cleanup()
   })
-
   observer.observe(document.body, { childList: true, subtree: true })
-  setTimeout(() => observer.disconnect(), 10_000)
+
+  // Scroll listener: for intersection-observer-based lazy loading (e.g. LinkedIn)
+  let scrollTimer: ReturnType<typeof setTimeout> | null = null
+  const onScroll = () => {
+    if (pending.length === 0) {
+      cleanup()
+      return
+    }
+    if (scrollTimer) clearTimeout(scrollTimer)
+    scrollTimer = setTimeout(() => {
+      if (pending.length === 0) return
+      const nowRestored = tryRestore(pending)
+      pending = pending.filter((h) => !nowRestored.has(h.id))
+      if (pending.length === 0) cleanup()
+    }, 500)
+  }
+  window.addEventListener("scroll", onScroll, { passive: true })
+
+  // Fallback: periodic retries for lazy-loaded content that may not trigger childList mutations
+  for (const delay of [1000, 2000, 5000]) {
+    setTimeout(() => {
+      if (pending.length === 0) return
+      const nowRestored = tryRestore(pending)
+      pending = pending.filter((h) => !nowRestored.has(h.id))
+      if (pending.length === 0) cleanup()
+    }, delay)
+  }
+
+  // Hard cleanup at 30s — user may scroll slowly through the page
+  setTimeout(cleanup, 30_000)
 }
 
 restoreWithRetry()
